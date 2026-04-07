@@ -81,7 +81,8 @@ class LinearWithGoRA(LinearWithQLoRA):
         fast_svd_n_iters: Optional[int] = 16,
         gora_init_method: str = 'compress',
         gora_rank_stablize: bool = False,
-        gora_dynamic_scaling: bool = False
+        gora_dynamic_scaling: bool = False,
+        gora_adapter_type: str = 'lora'
     ):
         self.n_iters = fast_svd_n_iters
         self.fast_svd = fast_svd_n_iters > 2
@@ -89,6 +90,7 @@ class LinearWithGoRA(LinearWithQLoRA):
         self.dynamic_scaling = gora_dynamic_scaling
         self.rank_stablize = gora_rank_stablize
         self.scaling_alpha = lora_config.lora_scaler
+        self.adapter_type = gora_adapter_type.lower()  #Edit: support GoRA + SingLoRA(AAT) in one layer.
         super().__init__(lora_config)
         self.quant_after_init = self.quant
         self.quant = False
@@ -96,6 +98,72 @@ class LinearWithGoRA(LinearWithQLoRA):
     def init_lora_weights(self):
         pass
 
+    @property
+    def has_lora_weights(self):
+        #Edit: SingLoRA mode stores one parameter matrix `weight_s` instead of (`weight_a`, `weight_b`).
+        if self.adapter_type == 'singlora':
+            return hasattr(self, 'weight_s') and self.weight_s is not None
+        return super().has_lora_weights
+
+    def _compute_lora_weight_from_ab(self):
+        #Edit: helper for GoRA init routines that still solve temporary A/B factors.
+        if not (hasattr(self, 'weight_a') and hasattr(self, 'weight_b')):
+            return None
+        weight_a = self.weight_a.to(self._get_lora_dtype())
+        weight_b = self.weight_b.to(self._get_lora_dtype())
+        return (self.lora_scaler * torch.matmul(weight_b, weight_a)).to(self.weight.dtype)
+
+    def _compute_singlora_core(self):
+        #Edit: AAT-style single-matrix parameterization for rectangular layers via sub-block extraction.
+        # `weight_s` shape: [max(out_features, in_features), rank]
+        s = self.weight_s.to(self._get_lora_dtype())
+        s_out = s[:self.out_features, :]
+        s_in = s[:self.in_features, :]
+        return torch.matmul(s_out, s_in.T)
+
+    def _compute_lora_weight(self):
+        #Edit: route LoRA weight computation based on adapter parameterization.
+        if self.adapter_type == 'singlora':
+            return (self.lora_scaler * self._compute_singlora_core()).to(self.weight.dtype)
+        return super()._compute_lora_weight()
+
+    def _convert_ab_to_singlora(self):
+        #Edit: convert temporary A/B adapter into a single-matrix AAT adapter.
+        lora_weight = self._compute_lora_weight_from_ab()
+        if lora_weight is None:
+            return
+        self._set_singlora_from_lora_weight(lora_weight)
+        if hasattr(self, 'weight_a'):
+            delattr(self, 'weight_a')
+        if hasattr(self, 'weight_b'):
+            delattr(self, 'weight_b')
+
+    def _set_singlora_from_lora_weight(self, lora_weight: Tensor):
+        #Edit: initialize single-matrix parameter from an existing LoRA delta via truncated SVD.
+        dtype = self._get_lora_dtype()
+        device = lora_weight.device
+        n = max(self.out_features, self.in_features)
+        r = self.lora_rank
+
+        if r <= 0:
+            return
+
+        core = (lora_weight / (self.lora_scaler + 1e-12)).to(torch.float32)
+        u, s, vh = torch.linalg.svd(core, full_matrices=False)
+        k = min(r, s.shape[0])
+        sqrt_sk = torch.sqrt(torch.clamp(s[:k], min=0.0))
+        out_embed = u[:, :k] @ torch.diag(sqrt_sk)
+        in_embed = vh[:k, :].T @ torch.diag(sqrt_sk)
+
+        s_full = torch.zeros((n, r), dtype=torch.float32, device=device)
+        counts = torch.zeros((n, 1), dtype=torch.float32, device=device)
+        s_full[:self.out_features, :k] += out_embed
+        counts[:self.out_features] += 1.0
+        s_full[:self.in_features, :k] += in_embed
+        counts[:self.in_features] += 1.0
+        s_full = s_full / torch.clamp(counts, min=1.0)
+        self.weight_s = nn.Parameter(s_full.to(dtype), requires_grad=True)
+        
     def _get_scaling(self, avg_rank, real_rank):
         if self.dynamic_scaling:
             self.scale_rank = real_rank
@@ -109,6 +177,11 @@ class LinearWithGoRA(LinearWithQLoRA):
     def _lora_forward(self, x: Tensor, result: Tensor) -> Tensor:
         if self.lora_rank == 0:
             return result
+        elif self.adapter_type == 'singlora':
+            #Edit: forward with single AAT-style adapter matrix.
+            lora_weight = self._compute_singlora_core().to(self._get_lora_dtype())
+            lora_result = F.linear(self.lora_dropout(x), lora_weight).to(result.dtype)
+            return result + self.lora_scaler * lora_result
         else:
             return super()._lora_forward(x, result)
         
@@ -132,6 +205,9 @@ class LinearWithGoRA(LinearWithQLoRA):
                                        lr=lr)
                 elif self.init_method == 'vanilla':
                     super().init_lora_weights()
+                #Edit: after standard GoRA init, optionally fold A/B into single-matrix SingLoRA.
+                if self.adapter_type == 'singlora':
+                    self._convert_ab_to_singlora()
             if hasattr(self.weight, "grad_stored"):
                 del self.weight.grad_stored
             if hasattr(self.weight, "iters"):
@@ -182,13 +258,14 @@ class LinearWithGoRA(LinearWithQLoRA):
         weight_b_data *= (stable_gemma / self.scaling_alpha)
 
         self.weight_b = nn.Parameter(weight_b_data.contiguous())
-        reconstruction_error = torch.norm(-grad_stored*lr - self._compute_lora_weight(), p='fro')
+        #Edit: use temporary A/B form during GoRA initialization diagnostics.
+        reconstruction_error = torch.norm(-grad_stored*lr - self._compute_lora_weight_from_ab(), p='fro')
         relative_error = reconstruction_error / torch.norm(grad_stored, p='fro')
         self.register_buffer("error", reconstruction_error)
         self.register_buffer("relative_error", relative_error)
         # Final weight update with proper dtype conversion
         if reinit_weight:
-            updated_weight = weight - self._compute_lora_weight()
+            updated_weight = weight - self._compute_lora_weight_from_ab()
             self.weight.data = updated_weight.to(origin_weight_dtype)
 
 
@@ -223,7 +300,8 @@ class LinearWithGoRA(LinearWithQLoRA):
         weight = self.weight.to()
         weight_dtype = self.weight.dtype
         weight = self.weight
-        self.weight.data = (weight - self._compute_lora_weight().to(weight_dtype))
+        #Edit: keep initialization in temporary A/B form before optional SingLoRA folding.
+        self.weight.data = (weight - self._compute_lora_weight_from_ab().to(weight_dtype))
 
     def weight_svd_init(self):
         if self.lora_rank > 0:
@@ -248,7 +326,8 @@ class LinearWithGoRA(LinearWithQLoRA):
             weight_b_data = Vr @ torch.diag(sqrt_Sr)
             self.weight_b = nn.Parameter(weight_b_data.to(dtype), requires_grad=True)
 
-            self.weight.data = (weight - self._compute_lora_weight()).to(weight_dtype)
+            #Edit: keep initialization in temporary A/B form before optional SingLoRA folding.
+            self.weight.data = (weight - self._compute_lora_weight_from_ab()).to(weight_dtype)
 
 def compute_importance(param, grad_stored, features, scale_features, type, lora_rank, max_lora_rank):
     param = param.float()

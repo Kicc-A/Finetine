@@ -326,6 +326,8 @@ def peft_parser(parser: argparse.ArgumentParser):
     
     group.add_argument('--use-gora', action='store_true',
                        help='Whether to use gora')
+    group.add_argument('--gora-adapter-type', type=str, default='lora', choices=['lora', 'singlora'],
+                       help=' #Edit: Adapter parameterization used by GoRA: classic BA or SingLoRA-style single matrix (AAT slice).')
     group.add_argument('--gora-init-method', type=str, default='weight_svd')
     group.add_argument('--gora-max-rank', type=int, default=9999)
     group.add_argument('--gora-min-rank', type=int, default=1)

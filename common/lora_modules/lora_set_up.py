@@ -176,7 +176,8 @@ LORA_VARIANTS: Dict[str, LoRAVariant] = {
                 LinearWithGoRA, 
                 lambda a: {"gora_init_method": a.gora_init_method,
                 "gora_rank_stablize": a.gora_rank_stablize,
-                "gora_dynamic_scaling": a.gora_dynamic_scaling}, 
+                "gora_dynamic_scaling": a.gora_dynamic_scaling,
+                "gora_adapter_type": a.gora_adapter_type},  #Edit: forward adapter type into GoRA layer.
                 lambda a: "GoRA utilize gradient of pre-trained weight to allocate rank and intialize weights for low-rank adapters. "
                 "accelerate the convergence. The initialization of GoRA requires some time, "
                 f"which depends on the number of gradient computing steps: {a.gradient_est_n_steps}"
@@ -453,6 +454,13 @@ class LoRAManager:
                     f"Invalid initialization type for gora: {args.gora_init_method}. "
                     f"Choose from {sorted(valid_gora_methods)}."
                 )
+            #Edit: validate GoRA adapter parameterization mode.
+            valid_gora_adapter_types = {'lora', 'singlora'}
+            if args.gora_adapter_type not in valid_gora_adapter_types:
+                raise ValueError(
+                    f"Invalid adapter type for gora: {args.gora_adapter_type}. "
+                    f"Choose from {sorted(valid_gora_adapter_types)}."
+                )
         
         if getattr(args, 'use_rasa', False):
             if args.rasa_shared_lora_rank > args.lora_rank:
@@ -605,6 +613,10 @@ def setup_lora(model: nn.Module, args: Namespace, model_config: Optional[Any] = 
     model.to(args.device)
 
 def get_lora_weight_names(args):
+    #Edit: SingLoRA mode under GoRA trains a single matrix parameter `weight_s`.
+    if getattr(args, "use_gora", False) and getattr(args, "gora_adapter_type", "lora") == "singlora":
+        return ['weight_s']
+
     conditions = [
         (args.use_randlora, ['lambda', 'gemma']),
         (args.use_vera, ['lambda']),
