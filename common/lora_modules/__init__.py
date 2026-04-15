@@ -26,7 +26,7 @@ from common.lora_modules.goat import *
 from common.lora_modules.lora_one import *
 from common.lora_modules.vera import *
 from common.lora_modules.eva import *
-from common.lora_modules.rasa_moe import *
+#Edit hotfix: rasa_moe module missing, disabled for current run
 from common.lora_modules.dralora import dralora_reinit
 
 @contextlib.contextmanager
