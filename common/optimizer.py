@@ -43,7 +43,7 @@ def get_optimizer(ds_config, args, model, optimizer_sd = None, lr_scheduler_sd =
     This function provide clear optimizer prepare process and can adjust the parameter groups if needed.
     """
     if not args.diy_optimizer:
-        return None, None
+        raise RuntimeError('DIY optimizer failed and DS fallback is disabled')
 
     optim_type = get_optimizer_type(args, ds_config)
     if ds_config:
@@ -61,7 +61,7 @@ def get_optimizer(ds_config, args, model, optimizer_sd = None, lr_scheduler_sd =
         print_rank_0(f'--->Deepspeed optimizer setting has been overwritten', args.global_rank)
     else:
         print_rank_0(f'--->Try to use diy optimizer failed, use the ds setting', args.global_rank)
-        return None, None
+        raise RuntimeError('DIY optimizer failed and DS fallback is disabled')
 
     lr_scheduler = get_learning_rate_scheduler(optimizer, 0, args)
 
@@ -113,6 +113,7 @@ def register_per_layer_optim(optimizer_class,args,model):
     return None
 
 def get_regular_optimizer(optim_type, args, model):
+    import torch  # local fallback import
     try:
         lr_group_patterns = set(args.lr_group_patterns) if args.lr_group_patterns else set()
         lr_group_scales = set(args.lr_group_scales) if args.lr_group_scales else set()
@@ -174,7 +175,7 @@ def get_regular_optimizer(optim_type, args, model):
             optimizer_kwargs['eps'] = args.eps
             optimizer_kwargs['betas'] = tuple(args.betas)
 
-        optimizer = optimizer_class(params, **optimizer_kwargs)
+        optimizer = torch.optim.AdamW(params, lr=args.lr, betas=tuple(args.betas), eps=args.eps, weight_decay=args.weight_decay)
         isSuccess = True
     except Exception:
         print_rank_0(f'--->Load local optimizer error as: {traceback.format_exc()}', args.global_rank)

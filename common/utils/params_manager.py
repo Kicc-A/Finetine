@@ -92,6 +92,13 @@ def refresh_config(ds_config, args):
     ds_config['gradient_accumulation_steps'] = args.gradient_accumulation_steps
     ds_config['train_micro_batch_size_per_gpu'] = args.batch_size_per_gpu
     ds_config['optimizer']['params']['lr'] = args.lr
+    # auto-create scheduler field if missing
+    if "optimizer" not in ds_config:
+        ds_config["optimizer"] = {}
+    if "scheduler" not in ds_config["optimizer"]:
+        ds_config["optimizer"]["scheduler"] = {"params": {}}
+    if "params" not in ds_config["optimizer"]["scheduler"]:
+        ds_config["optimizer"]["scheduler"]["params"] = {}
     ds_config["optimizer"]["scheduler"]["params"]["warmup_num_steps"] = args.num_warmup_steps
     ds_config["gradient_clipping"] = args.clip_grad_max_norm
     ds_config["steps_per_print"] = args.ds_steps_per_print

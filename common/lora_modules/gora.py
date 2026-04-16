@@ -685,10 +685,14 @@ def gora_reinit(
         error, relative_error = 0, 0
         for module in model.modules():
             if isinstance(module, LinearWithGoRA):
-                error += module.error
-                relative_error += module.relative_error
-                count += 1
+                if hasattr(module, 'error') and hasattr(module, 'relative_error'):
+                    error += module.error
+                    relative_error += module.relative_error
+                    count += 1
 
-        print_rank_0(f'error: {error/count}, relative error: {relative_error/count}', args.global_rank)
+        if count > 0:
+            print_rank_0(f'error: {error/count}, relative error: {relative_error/count}', args.global_rank)
+        else:
+            print_rank_0('--->No error buffers found for GoRA modules, skip error summary.', args.global_rank)
 
     print_rank_0(f'--->Total time consumed for GoRA initialization: {timer.time_cost}, Peak memory used: {timer.peak_memory}MB', args.global_rank)
