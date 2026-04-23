@@ -57,7 +57,12 @@ class AnnealingLR(_LRScheduler):
         Raises:
             AssertionError: If warmup_iter is greater than num_iters.
         """
-        assert warmup_iter <= num_iters
+        if num_iters < 1:
+            raise ValueError(f"num_iters must be >= 1, got {num_iters}")
+
+        # Clamp warmup to a valid range so tiny runs (e.g., num_iters=1) won't crash.
+        warmup_iter = max(0, min(warmup_iter, num_iters - 1))
+
         self.optimizer = optimizer
         self.lr_scale = deepcopy([x['lr'] if 'lr' in x else 1. for x in optimizer.param_groups])
         self.start_lr = start_lr
@@ -71,8 +76,8 @@ class AnnealingLR(_LRScheduler):
         self.auto_warmup_rate = auto_warmup_rate
         self.global_rank = global_rank
 
-        if warmup_iter < 0 or num_iters <= warmup_iter:
-            raise ValueError(f"warmup_iter ({warmup_iter}) must be in range [0, num_iters ({num_iters})]")
+        if warmup_iter < 0 or warmup_iter >= num_iters:
+            raise ValueError(f"warmup_iter ({warmup_iter}) must be in range [0, num_iters ({num_iters}))")
         if self.decay_style == self.DECAY_STYLES[3]:
             if restart_every is None:
                 raise ValueError("restart_every must be specified for cosine_restarts scheduler")

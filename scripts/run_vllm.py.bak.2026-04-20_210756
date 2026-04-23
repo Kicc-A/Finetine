@@ -56,9 +56,6 @@ def get_sd_from_mt_lora(model_path, lora_path):
     model = AutoModelForCausalLM.from_pretrained(model_path)
     config = json.load(open(os.path.join(lora_path, 'config.json'), 'r'))
     config = Namespace(**config)
-    # Backward compatibility: old checkpoints may not contain this field
-    if not hasattr(config, "gora_adapter_type"):
-        config.gora_adapter_type = getattr(config, "adapter_type", "lora")
     switch_to_lora(model, config)
 
     if hasattr(config, 'use_gora') and config.use_gora:
@@ -177,26 +174,21 @@ def inference(model_name,
         model_sd = get_sd_from_mt_lora(args.model_name, args.lora_path)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    # vLLM 0.18: use prompts=..., not prompt_token_ids=...
-    formatted_prompts = tokenize(prompts, tokenizer, args, encode=False)
-
+    tokenized_prompts = tokenize(prompts, tokenizer, args)
     llm = vllm.LLM(model=model_name,
                    tensor_parallel_size=TENSOR_PARALLEL_WORLD_SIZE,
-                   max_model_len=args.max_model_len,
-                   enforce_eager=True,
-                   disable_custom_all_reduce=True)
+                   max_model_len=args.max_model_len)
     
     if args.load_lora_from_mt:
         llm.llm_engine.model_executor.driver_worker.worker.model_runner.model.load_weights(model_sd)
 
-    outputs = llm.generate(prompts=formatted_prompts,
+    outputs = llm.generate(prompt_token_ids=tokenized_prompts,
                            sampling_params=sampling_params,
                            use_tqdm=True if dp_rank == 0 else False,
                            lora_request=lora_request)
     outputs = [output.outputs[0].text for output in outputs]
     print(f'dp rank: {dp_rank} finishied generation.')
     return dict(zip(prompts, outputs))
-
 
 def main():
     parser = argparse.ArgumentParser()

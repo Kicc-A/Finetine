@@ -1,3 +1,4 @@
+import torch  # #Edit
 import logging
 import traceback
 import torch.optim as optim
@@ -175,7 +176,7 @@ def get_regular_optimizer(optim_type, args, model):
             optimizer_kwargs['eps'] = args.eps
             optimizer_kwargs['betas'] = tuple(args.betas)
 
-        optimizer = torch.optim.AdamW(params, lr=args.lr, betas=tuple(args.betas), eps=args.eps, weight_decay=args.weight_decay)
+        optimizer = torch.optim.AdamW(params, lr=args.lr, betas=tuple(args.betas) if args.betas is not None else (0.9, 0.999), eps=args.eps if args.eps is not None else 1e-8, weight_decay=args.weight_decay)
         isSuccess = True
     except Exception:
         print_rank_0(f'--->Load local optimizer error as: {traceback.format_exc()}', args.global_rank)

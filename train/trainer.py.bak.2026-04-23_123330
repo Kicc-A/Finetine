@@ -271,14 +271,6 @@ class Trainer:
 
         print_rank_0(f'--->Saved the model in {save_path}.', self.args.global_rank)
 
-    def is_adapter_param(self, param_name: str) -> bool:
-        adapter_tags = (
-            "weight_s", "weight_a", "weight_b",
-            "lora_A", "lora_B",
-            "lora_embedding_A", "lora_embedding_B",
-        )
-        return any(tag in param_name for tag in adapter_tags)
-
     def torch_save(self, 
                 model:torch.nn.Module, 
                 optimizer: Callable, 
@@ -292,13 +284,13 @@ class Trainer:
             print_rank_0('--->Gathering full model weights from all GPUs for ZeRO-3...', self.args.global_rank)
             for name, param in model.module.named_parameters():         
                 with deepspeed.zero.GatheredParameters(param):
-                    if self.requires_save(name, param) and self.is_adapter_param(name):
+                    if self.requires_save(name, param):
                         # Avoid OOM when zero3 is utilized.
                         model_state_dict[name] = param.data.clone().detach().cpu()
         else:
             for name, param in model.module.named_parameters():
-                if self.requires_save(name, param) and self.is_adapter_param(name):
-                    model_state_dict[name] = param.data.clone().detach().cpu()
+                if self.requires_save(name, param):
+                    model_state_dict[name] = param.data
 
         if self.args.global_rank == 0:
             if optimizer and lr_scheduler and not self.args.relora_steps:
